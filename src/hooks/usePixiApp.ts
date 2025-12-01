@@ -17,7 +17,7 @@ export const usePixiApp = () => {
             height: window.innerHeight,
             backgroundColor: 0xf0f0f0,
             antialias: true,
-            resolution:  1,  // Dynamic pixel ratio based on device
+            resolution: Math.min(window.devicePixelRatio || 1, 2),  // Clamp to max 2 for performance
             autoDensity: true,
         }).then(() => {
             if (mounted && containerRef.current && app.canvas) {

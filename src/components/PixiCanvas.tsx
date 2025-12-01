@@ -8,7 +8,6 @@ import projectData from '../data/project.json';
 import {Toolbar} from './Toolbar';
 import {FPSCounter} from './FPSCounter';
 import type {DrawMode} from './Toolbar';
-import type {Shape} from '../types/shapes';
 
 // Toggle stress test mode
 const STRESS_TEST_MODE = true;
@@ -20,7 +19,6 @@ export const PixiCanvas = () => {
     const viewportRef = useRef<Viewport | null>(null);
     const [drawMode, setDrawMode] = useState<DrawMode>('select');
     const drawModeRef = useRef<DrawMode>('select');
-    const [selectedShape, setSelectedShape] = useState<Shape | null>(null);
 
     // Sync drawMode with ref
     useEffect(() => {
@@ -68,6 +66,10 @@ export const PixiCanvas = () => {
                 interrupt: true,
                 trackpadPinch: true, // Enable trackpad pinch
                 wheelZoom: true,     // Enable scroll wheel zoom
+            })
+            .clampZoom({
+                minScale: 0.01,  // Can zoom out to see entire world
+                maxScale: 10,     // Can zoom in 10x for details
             });
 
         const manager = new ShapeManager(viewport);
@@ -100,12 +102,6 @@ export const PixiCanvas = () => {
         // Add selection change callback
         manager.onSelectionChanged((selectedIds) => {
             console.log('Selected shapes:', selectedIds);
-            if (selectedIds.length === 1) {
-                const shape = manager.getShapeById(selectedIds[0]);
-                setSelectedShape(shape || null);
-            } else {
-                setSelectedShape(null);
-            }
         });
 
         console.time('Adding shapes');
@@ -148,6 +144,25 @@ export const PixiCanvas = () => {
             manager.handlePointerUp();
         });
 
+        // Helper function to add selection handler to newly created shapes
+        const addShapeSelectionHandler = (shapeId: string) => {
+            const graphics = manager.getShape(shapeId)?.graphics;
+            if (graphics) {
+                graphics.on('pointerdown', (e) => {
+                    e.stopPropagation();
+                    const multiSelect = e.ctrlKey || e.metaKey;
+
+                    if (multiSelect && manager.isSelected(shapeId)) {
+                        manager.deselectShape(shapeId);
+                    } else {
+                        manager.selectShape(shapeId, multiSelect);
+                    }
+                });
+            }
+            manager.selectShape(shapeId, false);
+            setDrawMode('select');
+        };
+
         // Add click handler on viewport for deselection or shape creation
         viewport.on('pointerdown', (event) => {
             const localPos = viewport.toLocal(event.global);
@@ -155,57 +170,13 @@ export const PixiCanvas = () => {
 
             if (currentMode === 'polygon') {
                 const newShape = manager.createNewPolygon(localPos.x, localPos.y);
-                // Add selection and drag handlers to the new shape
-                const graphics = manager.getShape(newShape.id)?.graphics;
-                if (graphics) {
-                    graphics.on('pointerdown', (e) => {
-                        e.stopPropagation();
-                        const multiSelect = e.ctrlKey || e.metaKey;
-
-                        if (multiSelect && manager.isSelected(newShape.id)) {
-                            manager.deselectShape(newShape.id);
-                        } else {
-                            manager.selectShape(newShape.id, multiSelect);
-                        }
-                    });
-                }
-                // Auto-select the newly created shape
-                manager.selectShape(newShape.id, false);
-                setDrawMode('select');
+                addShapeSelectionHandler(newShape.id);
             } else if (currentMode === 'line') {
                 const newShape = manager.createNewLine(localPos.x, localPos.y);
-                const graphics = manager.getShape(newShape.id)?.graphics;
-                if (graphics) {
-                    graphics.on('pointerdown', (e) => {
-                        e.stopPropagation();
-                        const multiSelect = e.ctrlKey || e.metaKey;
-
-                        if (multiSelect && manager.isSelected(newShape.id)) {
-                            manager.deselectShape(newShape.id);
-                        } else {
-                            manager.selectShape(newShape.id, multiSelect);
-                        }
-                    });
-                }
-                manager.selectShape(newShape.id, false);
-                setDrawMode('select');
+                addShapeSelectionHandler(newShape.id);
             } else if (currentMode === 'point') {
                 const newShape = manager.createNewPoint(localPos.x, localPos.y);
-                const graphics = manager.getShape(newShape.id)?.graphics;
-                if (graphics) {
-                    graphics.on('pointerdown', (e) => {
-                        e.stopPropagation();
-                        const multiSelect = e.ctrlKey || e.metaKey;
-
-                        if (multiSelect && manager.isSelected(newShape.id)) {
-                            manager.deselectShape(newShape.id);
-                        } else {
-                            manager.selectShape(newShape.id, multiSelect);
-                        }
-                    });
-                }
-                manager.selectShape(newShape.id, false);
-                setDrawMode('select');
+                addShapeSelectionHandler(newShape.id);
             } else if (currentMode === 'select') {
                 manager.clearSelection();
             }
@@ -235,10 +206,6 @@ export const PixiCanvas = () => {
         <>
             <FPSCounter />
             <Toolbar currentMode={drawMode} onModeChange={setDrawMode} />
-            {/*<PropertiesPanel*/}
-            {/*    selectedShape={selectedShape}*/}
-            {/*    onPropertyChange={handlePropertyChange}*/}
-            {/*/>*/}
             <div
                 ref={containerRef}
                 style={{width: '100%', height: '100vh', backgroundColor: '#f0f0f0'}}

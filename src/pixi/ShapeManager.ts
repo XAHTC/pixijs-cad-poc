@@ -15,20 +15,27 @@ interface ResizeHandleGraphics extends Graphics {
     shapeId?: string;
 }
 
+// LOD thresholds (Figma-style progressive simplification)
+const LOD_MEDIUM_THRESHOLD = 5;   // Hide lines (laterals) when zoomed out 5x
+const LOD_LOW_THRESHOLD = 15;     // Hide lines and points when zoomed out 15x
+const BUFFER_PERCENT = 0.4;       // 40% buffer around viewport
+const BASE_AREA = 2000 * 2000;    // Reference area for zoom calculation
+
 export class ShapeManager {
-    private container: Container;
-    private shapesContainer: Container;
-    private labelsContainer: Container;
-    private resizeHandlesContainer: Container;
-    private shapes: Map<string, { graphics: Graphics; shape: Shape; inScene: boolean }> = new Map();
-    private labels: Map<string, Text> = new Map();
-    private selectedShapes: Set<string> = new Set();
+    private readonly container: Container;
+    private readonly shapesContainer: Container;
+    private readonly labelsContainer: Container;
+    private readonly resizeHandlesContainer: Container;
+    private readonly shapes: Map<string, { graphics: Graphics; shape: Shape; inScene: boolean }> = new Map();
+    private readonly labels: Map<string, Text> = new Map();
+    private readonly selectedShapes: Set<string> = new Set();
+    private readonly shapesInScene: Set<string> = new Set(); // Track what's currently rendered
     private selectionChangedCallback?: (selectedIds: string[]) => void;
     private resizeHandles: ResizeHandleGraphics[] = [];
-    private isDragging: boolean = false;
-    private dragOffset = { x: 0, y: 0 };
-    private isResizing: boolean = false;
-    private resizeHandleIndex: number = -1;
+    private isDragging = false;
+    private readonly dragOffset = { x: 0, y: 0 };
+    private isResizing = false;
+    private resizeHandleIndex = -1;
     private activeShapeId: string | null = null;
     private spatialIndex: RBush<RBushItem> | null = null;
 
@@ -130,44 +137,11 @@ export class ShapeManager {
         return graphics;
     }
 
-    // private createLabel(shape: PolygonShape, coords: Coordinate[]): Text {
-    //     const centerX = coords.reduce((sum, c) => sum + c.x, 0) / coords.length;
-    //     const centerY = coords.reduce((sum, c) => sum + c.y, 0) / coords.length;
-
-    //     const textStyle = new TextStyle({
-    //         fontFamily: 'Arial, sans-serif',
-    //         fontSize: 14,
-    //         fontWeight: 'normal',
-    //         fill: '#000000',
-    //         align: 'center',
-    //     });
-
-    //     const text = new Text({
-    //         text: shape.label || '',
-    //         style: textStyle,
-    //     });
-
-    //     text.position.set(centerX, centerY);
-    //     text.anchor.set(0.5);
-
-    //     // High resolution for crisp text
-    //     text.resolution = 4;
-
-    //     return text;
-    // }
-
     addShape(shape: Shape): Graphics {
         let graphics: Graphics;
 
         if (shape.type === 'polygon') {
             graphics = this.createPolygon(shape, shape.coordinates);
-
-            // // Add label to labels container (on top)
-            // if (shape.label) {
-            //     const text = this.createLabel(shape, shape.coordinates);
-            //     this.labelsContainer.addChild(text);
-            //     this.labels.set(shape.id, text);
-            // }
         } else if (shape.type === 'line') {
             graphics = this.createLine(shape, shape.points);
         } else if (shape.type === 'point') {
@@ -180,9 +154,9 @@ export class ShapeManager {
         graphics.cursor = 'pointer';
         graphics.label = shape.id;
 
-        // Add graphics to shapes container (below labels)
-        this.shapesContainer.addChild(graphics);
-        this.shapes.set(shape.id, { graphics, shape, inScene: true });
+        // Don't add to scene initially - let culling decide what to render
+        // This prevents adding 100k shapes then removing 95k on first cull
+        this.shapes.set(shape.id, { graphics, shape, inScene: false });
 
         return graphics;
     }
@@ -191,19 +165,19 @@ export class ShapeManager {
         let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
 
         if (shape.type === 'polygon') {
-            shape.coordinates.forEach(coord => {
+            for (const coord of shape.coordinates) {
                 if (coord.x < minX) minX = coord.x;
                 if (coord.x > maxX) maxX = coord.x;
                 if (coord.y < minY) minY = coord.y;
                 if (coord.y > maxY) maxY = coord.y;
-            });
+            }
         } else if (shape.type === 'line') {
-            shape.points.forEach(point => {
+            for (const point of shape.points) {
                 if (point.x < minX) minX = point.x;
                 if (point.x > maxX) maxX = point.x;
                 if (point.y < minY) minY = point.y;
                 if (point.y > maxY) maxY = point.y;
-            });
+            }
         } else if (shape.type === 'point') {
             const r = shape.radius || 5;
             minX = shape.coordinate.x - r;
@@ -234,27 +208,12 @@ export class ShapeManager {
         console.log(`RBush spatial index built with ${items.length} items`);
     }
 
-    removeShape(id: string): void {
-        const shapeData = this.shapes.get(id);
-        if (shapeData) {
-            this.shapesContainer.removeChild(shapeData.graphics);
-            shapeData.graphics.destroy();
-            this.shapes.delete(id);
-        }
-
-        const label = this.labels.get(id);
-        if (label) {
-            this.labelsContainer.removeChild(label);
-            label.destroy();
-            this.labels.delete(id);
-        }
-    }
-
     clear(): void {
         this.shapes.forEach(({ graphics }) => graphics.destroy());
         this.labels.forEach((label) => label.destroy());
         this.shapes.clear();
         this.labels.clear();
+        this.shapesInScene.clear();
         this.shapesContainer.removeChildren();
         this.labelsContainer.removeChildren();
     }
@@ -263,14 +222,6 @@ export class ShapeManager {
         const shapeData = this.shapes.get(id);
         if (!shapeData) return undefined;
         return { graphics: shapeData.graphics, shape: shapeData.shape };
-    }
-
-    getAllShapes(): Array<{ graphics: Graphics; shape: Shape }> {
-        return Array.from(this.shapes.values()).map(({ graphics, shape }) => ({ graphics, shape }));
-    }
-
-    getShapeCount(): number {
-        return this.shapes.size;
     }
 
     private updateShapeVisuals(id: string, selected: boolean): void {
@@ -406,10 +357,6 @@ export class ShapeManager {
 
     isSelected(id: string): boolean {
         return this.selectedShapes.has(id);
-    }
-
-    getSelectedShapes(): string[] {
-        return Array.from(this.selectedShapes);
     }
 
     onSelectionChanged(callback: (selectedIds: string[]) => void): void {
@@ -677,78 +624,8 @@ export class ShapeManager {
         return newShape;
     }
 
-    updateShapeStyle(id: string, updates: Partial<Shape>): void {
-        const shapeData = this.shapes.get(id);
-        if (!shapeData) return;
-
-        // Update the shape data
-        if (updates.style) {
-            shapeData.shape.style = {
-                ...shapeData.shape.style,
-                ...updates.style,
-            };
-        }
-
-        // Redraw the shape with updated style
-        const isSelected = this.isSelected(id);
-        this.updateShapeVisuals(id, isSelected);
-
-        // Update resize handles if this shape is selected
-        if (isSelected && this.selectedShapes.size === 1) {
-            this.updateResizeHandles(id);
-        }
-    }
-
     getShapeById(id: string): Shape | undefined {
         return this.shapes.get(id)?.shape;
-    }
-
-    private isShapeInBounds(shape: Shape, bounds: { x: number; y: number; width: number; height: number }): boolean {
-        const boundsRight = bounds.x + bounds.width;
-        const boundsBottom = bounds.y + bounds.height;
-
-        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-
-        if (shape.type === 'polygon') {
-            // Fast path: check first coordinate for early exit
-            const firstCoord = shape.coordinates[0];
-            if (firstCoord) {
-                minX = maxX = firstCoord.x;
-                minY = maxY = firstCoord.y;
-
-                // Check remaining coordinates
-                for (let i = 1; i < shape.coordinates.length; i++) {
-                    const coord = shape.coordinates[i];
-                    if (coord.x < minX) minX = coord.x;
-                    else if (coord.x > maxX) maxX = coord.x;
-                    if (coord.y < minY) minY = coord.y;
-                    else if (coord.y > maxY) maxY = coord.y;
-                }
-            }
-        } else if (shape.type === 'line') {
-            const firstPoint = shape.points[0];
-            if (firstPoint) {
-                minX = maxX = firstPoint.x;
-                minY = maxY = firstPoint.y;
-
-                for (let i = 1; i < shape.points.length; i++) {
-                    const point = shape.points[i];
-                    if (point.x < minX) minX = point.x;
-                    else if (point.x > maxX) maxX = point.x;
-                    if (point.y < minY) minY = point.y;
-                    else if (point.y > maxY) maxY = point.y;
-                }
-            }
-        } else if (shape.type === 'point') {
-            const radius = shape.radius || 5;
-            minX = shape.coordinate.x - radius;
-            maxX = shape.coordinate.x + radius;
-            minY = shape.coordinate.y - radius;
-            maxY = shape.coordinate.y + radius;
-        }
-
-        // Optimized intersection test
-        return !(maxX < bounds.x || minX > boundsRight || maxY < bounds.y || minY > boundsBottom);
     }
 
     cullShapes(viewportBounds: { x: number; y: number; width: number; height: number }): void {
@@ -761,13 +638,22 @@ export class ShapeManager {
 
         // Calculate zoom level (smaller viewport = zoomed in)
         const viewportArea = viewportBounds.width * viewportBounds.height;
-        const baseArea = 2000 * 2000;
-        const zoomOutFactor = Math.sqrt(viewportArea / baseArea); // >1 when zoomed out
+        const zoomOutFactor = Math.sqrt(viewportArea / BASE_AREA); // >1 when zoomed out
+
+        // Determine LOD level based on zoom (adjusted thresholds like Figma)
+        // LOD 0: Full detail - all geometry
+        // LOD 1: Medium detail - hide small details (lines)
+        // LOD 2: Low detail - only major shapes (polygons/blocks)
+        let lodLevel = 0;
+        if (zoomOutFactor > LOD_LOW_THRESHOLD) {
+            lodLevel = 2; // Very zoomed out (only major shapes)
+        } else if (zoomOutFactor > LOD_MEDIUM_THRESHOLD) {
+            lodLevel = 1; // Medium zoom (hide laterals)
+        }
 
         // Dynamic buffer
-        const bufferPercent = 0.4;
-        const bufferX = viewportBounds.width * bufferPercent;
-        const bufferY = viewportBounds.height * bufferPercent;
+        const bufferX = viewportBounds.width * BUFFER_PERCENT;
+        const bufferY = viewportBounds.height * BUFFER_PERCENT;
 
         const bufferedBounds = {
             minX: viewportBounds.x - bufferX,
@@ -776,59 +662,66 @@ export class ShapeManager {
             maxY: viewportBounds.y + viewportBounds.height + bufferY,
         };
 
+        // Use RBush to quickly find visible shapes (only checks tree structure)
+        const visibleItems = this.spatialIndex!.search(bufferedBounds);
+
         let visibleCount = 0;
-        let checkedCount = 0;
         let addedCount = 0;
         let removedCount = 0;
         let skippedByLOD = 0;
 
-        // Use RBush to quickly find visible shapes (O(log n) instead of O(n))
-        const visibleItems = this.spatialIndex!.search(bufferedBounds);
-        const potentiallyVisibleIds = new Set(visibleItems.map(item => item.id));
-        checkedCount = potentiallyVisibleIds.size;
+        // Track what should be visible
+        const shouldBeVisibleIds = new Set<string>();
 
-        // Determine LOD level based on zoom
-        // LOD 0: Full detail (zoomed in)
-        // LOD 1: Skip lines, show simplified polygons (medium zoom)
-        // LOD 2: Show only bounding boxes (zoomed out)
-        let lodLevel = 0;
-        if (zoomOutFactor > 8) {
-            lodLevel = 2; // Very zoomed out
-        } else if (zoomOutFactor > 3) {
-            lodLevel = 1; // Medium zoom
+        // Process only the shapes that RBush found (not all 100k!)
+        for (const item of visibleItems) {
+            const shapeData = this.shapes.get(item.id);
+            if (!shapeData) continue;
+
+            visibleCount++;
+
+            // LOD filtering: Progressive simplification like Figma
+            // LOD 1: Hide lines (irrigation laterals are too dense)
+            // LOD 2: Hide lines and points (only show polygons/blocks)
+            if (lodLevel >= 1 && shapeData.shape.type === 'line') {
+                skippedByLOD++;
+                continue;
+            }
+            if (lodLevel >= 2 && shapeData.shape.type === 'point') {
+                skippedByLOD++;
+                continue;
+            }
+
+            shouldBeVisibleIds.add(item.id);
+
+            // Add to scene if not already there
+            if (!shapeData.inScene) {
+                this.shapesContainer.addChild(shapeData.graphics);
+                shapeData.inScene = true;
+                this.shapesInScene.add(item.id);
+                addedCount++;
+            }
         }
 
-        // Process visible shapes
-        this.shapes.forEach((shapeData, id) => {
-            const shouldBeVisible = potentiallyVisibleIds.has(id);
+        // Remove shapes that are in scene but shouldn't be
+        // Must collect IDs first - cannot modify Set during iteration
+        const idsToRemove: string[] = [];
+        for (const id of this.shapesInScene) {
+            if (!shouldBeVisibleIds.has(id)) {
+                idsToRemove.push(id);
+            }
+        }
 
-            if (shouldBeVisible) {
-                visibleCount++;
-
-                // LOD filtering: skip lines when zoomed out
-                if (lodLevel >= 1 && shapeData.shape.type === 'line') {
-                    if (shapeData.inScene) {
-                        this.shapesContainer.removeChild(shapeData.graphics);
-                        shapeData.inScene = false;
-                        removedCount++;
-                    }
-                    skippedByLOD++;
-                    return;
-                }
-
-                // Add to scene if not already there
-                if (!shapeData.inScene) {
-                    this.shapesContainer.addChild(shapeData.graphics);
-                    shapeData.inScene = true;
-                    addedCount++;
-                }
-            } else if (shapeData.inScene) {
-                // Remove shapes that are no longer visible
+        // Now remove the collected IDs
+        for (const id of idsToRemove) {
+            const shapeData = this.shapes.get(id);
+            if (shapeData && shapeData.inScene) {
                 this.shapesContainer.removeChild(shapeData.graphics);
                 shapeData.inScene = false;
+                this.shapesInScene.delete(id);
                 removedCount++;
             }
-        });
+        }
 
         const cullTime = performance.now() - startTime;
 
@@ -865,10 +758,10 @@ export class ShapeManager {
                     count: visibleCount,
                     total: this.shapes.size,
                     cullTime: cullTime.toFixed(2),
-                    checked: checkedCount,
+                    checked: visibleItems.length, // Only checked items RBush returned
                     added: addedCount,
                     removed: removedCount,
-                    inScene: this.shapesContainer.children.length,
+                    inScene: this.shapesInScene.size,
                     skippedByLOD,
                     lodLevel
                 }
