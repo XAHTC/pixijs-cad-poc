@@ -551,6 +551,25 @@ export class ShapeManager {
         this.resizeHandleIndex = -1;
     }
 
+    private makeShapeVisible(id: string): void {
+        const shapeData = this.shapes.get(id);
+        if (!shapeData || shapeData.inScene) return;
+
+        // Add to scene
+        this.shapesContainer.addChild(shapeData.graphics);
+        shapeData.inScene = true;
+        this.shapesInScene.add(id);
+
+        // Update spatial index if it exists
+        if (this.spatialIndex) {
+            const bounds = this.calculateShapeBounds(shapeData.shape);
+            this.spatialIndex.insert({
+                ...bounds,
+                id,
+            });
+        }
+    }
+
     createNewPolygon(x: number, y: number, size: number = 50): Shape {
         const id = `polygon-${Date.now()}`;
         const halfSize = size / 2;
@@ -569,6 +588,7 @@ export class ShapeManager {
 
         const graphics = this.addShape(newShape);
         this.enableDragAndDrop(id, graphics);
+        this.makeShapeVisible(id);
 
         return newShape;
     }
@@ -588,6 +608,7 @@ export class ShapeManager {
 
         const graphics = this.addShape(newShape);
         this.enableDragAndDrop(id, graphics);
+        this.makeShapeVisible(id);
 
         return newShape;
     }
@@ -609,6 +630,7 @@ export class ShapeManager {
 
         const graphics = this.addShape(newShape);
         this.enableDragAndDrop(id, graphics);
+        this.makeShapeVisible(id);
 
         return newShape;
     }
