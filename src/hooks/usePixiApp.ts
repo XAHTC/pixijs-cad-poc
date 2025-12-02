@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Application } from 'pixi.js';
+import { PIXI_CONFIG } from '../config/constants';
 
 export const usePixiApp = () => {
     const appRef = useRef<Application | null>(null);
@@ -15,9 +16,9 @@ export const usePixiApp = () => {
         app.init({
             width: window.innerWidth,
             height: window.innerHeight,
-            backgroundColor: 0xf0f0f0,
-            antialias: true,
-            resolution: Math.min(window.devicePixelRatio || 1, 2),  // Clamp to max 2 for performance
+            backgroundColor: PIXI_CONFIG.backgroundColor,
+            antialias: PIXI_CONFIG.antialias,
+            resolution: Math.min(window.devicePixelRatio || 1, PIXI_CONFIG.maxResolution),
             autoDensity: true,
         }).then(() => {
             if (mounted && containerRef.current && app.canvas) {

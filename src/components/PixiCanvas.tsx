@@ -1,17 +1,18 @@
 import {useEffect, useRef, useState} from 'react';
 import {usePixiApp} from '../hooks/usePixiApp';
 import {Viewport} from 'pixi-viewport';
+import {Graphics} from 'pixi.js';
 import {ShapeManager} from '../pixi/ShapeManager';
 import {calculateBounds, parseIrrigationProject} from '../utils/jsonParser';
 import {generateStressTestShapes} from '../utils/stressTestGenerator';
-import projectData from '../data/project.json';
+import projectDataRaw from '../data/project.json';
 import {Toolbar} from './Toolbar';
 import {FPSCounter} from './FPSCounter';
 import type {DrawMode} from './Toolbar';
+import {STRESS_TEST_MODE, STRESS_TEST_COUNT, STRESS_TEST_AREA, VIEWPORT_CONFIG} from '../config/constants';
+import type {IrrigationProject} from '../types/shapes';
 
-// Toggle stress test mode
-const STRESS_TEST_MODE = true;
-const STRESS_TEST_COUNT = 100000;
+const projectData = projectDataRaw as IrrigationProject;
 
 export const PixiCanvas = () => {
     const {appRef, containerRef, isReady} = usePixiApp();
@@ -32,10 +33,10 @@ export const PixiCanvas = () => {
         const shapes = STRESS_TEST_MODE
             ? generateStressTestShapes({
                 targetShapeCount: STRESS_TEST_COUNT,
-                areaWidth: 50000,  // Large area to test culling (50km x 50km)
-                areaHeight: 50000,
-                baseX: 611000,     // UTM coordinates like real project
-                baseY: 4205000,
+                areaWidth: STRESS_TEST_AREA.width,
+                areaHeight: STRESS_TEST_AREA.height,
+                baseX: STRESS_TEST_AREA.baseX,
+                baseY: STRESS_TEST_AREA.baseY,
             })
             : parseIrrigationProject(projectData);
 
@@ -44,13 +45,12 @@ export const PixiCanvas = () => {
         const bounds = calculateBounds(shapes);
         const width = bounds.maxX - bounds.minX;
         const height = bounds.maxY - bounds.minY;
-        const padding = 50;
 
         const viewport = new Viewport({
             screenWidth: window.innerWidth,
             screenHeight: window.innerHeight,
-            worldWidth: width + padding * 2,
-            worldHeight: height + padding * 2,
+            worldWidth: width + VIEWPORT_CONFIG.padding * 2,
+            worldHeight: height + VIEWPORT_CONFIG.padding * 2,
             events: appRef.current.renderer.events,
         });
 
@@ -60,17 +60,8 @@ export const PixiCanvas = () => {
         viewport
             .drag()
             .pinch() // Two-finger pinch zoom
-            .wheel({
-                percent: 0.3,
-                smooth: 5,
-                interrupt: true,
-                trackpadPinch: true, // Enable trackpad pinch
-                wheelZoom: true,     // Enable scroll wheel zoom
-            })
-            .clampZoom({
-                minScale: 0.01,  // Can zoom out to see entire world
-                maxScale: 10,     // Can zoom in 10x for details
-            });
+            .wheel(VIEWPORT_CONFIG.wheel)
+            .clampZoom(VIEWPORT_CONFIG.zoom);
 
         const manager = new ShapeManager(viewport);
         shapeManagerRef.current = manager;
@@ -104,21 +95,26 @@ export const PixiCanvas = () => {
             console.log('Selected shapes:', selectedIds);
         });
 
-        console.time('Adding shapes');
-        shapes.forEach((shape) => {
-            const graphics = manager.addShape(shape);
-
-            // Add click handler for selection and drag
+        // Helper function to add selection handler to shapes
+        const addShapeSelectionHandler = (shapeId: string, graphics: Graphics) => {
             graphics.on('pointerdown', (event) => {
                 event.stopPropagation();
                 const multiSelect = event.ctrlKey || event.metaKey;
 
-                if (multiSelect && manager.isSelected(shape.id)) {
-                    manager.deselectShape(shape.id);
+                if (multiSelect && manager.isSelected(shapeId)) {
+                    manager.deselectShape(shapeId);
                 } else {
-                    manager.selectShape(shape.id, multiSelect);
+                    manager.selectShape(shapeId, multiSelect);
                 }
             });
+        };
+
+        console.time('Adding shapes');
+        shapes.forEach((shape) => {
+            const graphics = manager.addShape(shape);
+
+            // Add click handler for selection
+            addShapeSelectionHandler(shape.id, graphics);
 
             // Enable drag and drop for the shape
             manager.enableDragAndDrop(shape.id, graphics);
@@ -144,20 +140,11 @@ export const PixiCanvas = () => {
             manager.handlePointerUp();
         });
 
-        // Helper function to add selection handler to newly created shapes
-        const addShapeSelectionHandler = (shapeId: string) => {
+        // Helper function to handle new shape creation
+        const handleNewShape = (shapeId: string) => {
             const graphics = manager.getShape(shapeId)?.graphics;
             if (graphics) {
-                graphics.on('pointerdown', (e) => {
-                    e.stopPropagation();
-                    const multiSelect = e.ctrlKey || e.metaKey;
-
-                    if (multiSelect && manager.isSelected(shapeId)) {
-                        manager.deselectShape(shapeId);
-                    } else {
-                        manager.selectShape(shapeId, multiSelect);
-                    }
-                });
+                addShapeSelectionHandler(shapeId, graphics);
             }
             manager.selectShape(shapeId, false);
             setDrawMode('select');
@@ -170,13 +157,13 @@ export const PixiCanvas = () => {
 
             if (currentMode === 'polygon') {
                 const newShape = manager.createNewPolygon(localPos.x, localPos.y);
-                addShapeSelectionHandler(newShape.id);
+                handleNewShape(newShape.id);
             } else if (currentMode === 'line') {
                 const newShape = manager.createNewLine(localPos.x, localPos.y);
-                addShapeSelectionHandler(newShape.id);
+                handleNewShape(newShape.id);
             } else if (currentMode === 'point') {
                 const newShape = manager.createNewPoint(localPos.x, localPos.y);
-                addShapeSelectionHandler(newShape.id);
+                handleNewShape(newShape.id);
             } else if (currentMode === 'select') {
                 manager.clearSelection();
             }

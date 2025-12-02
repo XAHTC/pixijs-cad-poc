@@ -51,6 +51,25 @@ export interface SubArea {
     Blocks: Block[];
 }
 
+export interface StyleValue {
+    Value: string | number;
+}
+
+export interface LateralDesignLineStyle {
+    PreHydraulicCalculationBorderColor?: StyleValue;
+    PostHydraulicCalculationBorderColor?: StyleValue;
+    PreHydraulicCalculationBorderWidth?: StyleValue;
+    PostHydraulicCalculationBorderWidth?: StyleValue;
+}
+
+export interface ExternalSnapshot {
+    BlockDesignFillColor?: StyleValue;
+    BlockDesignBorderColor?: StyleValue;
+    BlockDesignBorderWidth?: StyleValue;
+    BlockDesignOpacity?: StyleValue;
+    LateralDesignLineStyle?: LateralDesignLineStyle;
+}
+
 export interface Block {
     Id: string;
     Name: string;
@@ -59,6 +78,7 @@ export interface Block {
     Laterals: {
         Laterals: Lateral[];
     };
+    ExternalSnapshot?: ExternalSnapshot;
 }
 
 export interface Lateral {

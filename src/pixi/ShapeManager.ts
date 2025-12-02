@@ -1,6 +1,13 @@
 import { Container, Graphics, Text } from 'pixi.js';
-import type {Shape, Coordinate, PointShape, PolygonShape} from '../types/shapes';
+import type {Shape, PointShape, PolygonShape} from '../types/shapes';
 import RBush from 'rbush';
+import {
+    LOD_MEDIUM_THRESHOLD,
+    LOD_LOW_THRESHOLD,
+    BUFFER_PERCENT,
+    BASE_AREA,
+    DEFAULT_SHAPE_STYLES
+} from '../config/constants';
 
 interface RBushItem {
     minX: number;
@@ -14,12 +21,6 @@ interface ResizeHandleGraphics extends Graphics {
     handleIndex?: number;
     shapeId?: string;
 }
-
-// LOD thresholds (Figma-style progressive simplification)
-const LOD_MEDIUM_THRESHOLD = 3;   // Hide lines (laterals) when zoomed out 3x
-const LOD_LOW_THRESHOLD = 8;      // Hide lines and points when zoomed out 8x
-const BUFFER_PERCENT = 0.4;       // 40% buffer around viewport
-const BASE_AREA = 2000 * 2000;    // Reference area for zoom calculation
 
 export class ShapeManager {
     private readonly container: Container;
@@ -57,83 +58,89 @@ export class ShapeManager {
         return parseInt(hex.replace('#', ''), 16);
     }
 
-    private createPolygon(shape: PolygonShape, coords: Coordinate[]): Graphics {
-        const graphics = new Graphics();
+    private drawShape(graphics: Graphics, shape: Shape, selected: boolean = false): void {
+        graphics.clear();
 
-        if (coords.length > 0) {
-            const points: number[] = [];
-            coords.forEach(coord => {
-                points.push(coord.x, coord.y);
-            });
-
-            graphics.poly(points);
-
-            if (shape.style.fillColor) {
-                graphics.fill({
-                    color: this.hexToNumber(shape.style.fillColor),
-                    alpha: shape.style.opacity || 1,
+        if (shape.type === 'polygon') {
+            const coords = shape.coordinates;
+            if (coords.length > 0) {
+                const points: number[] = [];
+                coords.forEach(coord => {
+                    points.push(coord.x, coord.y);
                 });
-            }
 
-            if (shape.style.borderColor) {
+                graphics.poly(points);
+
+                if (shape.style.fillColor) {
+                    const baseAlpha = shape.style.opacity !== undefined ? shape.style.opacity : 1;
+                    graphics.fill({
+                        color: this.hexToNumber(shape.style.fillColor),
+                        alpha: selected ? baseAlpha * DEFAULT_SHAPE_STYLES.selection.fillAlpha : baseAlpha,
+                    });
+                }
+
                 graphics.stroke({
                     width: shape.style.borderWidth || 1,
-                    color: this.hexToNumber(shape.style.borderColor),
+                    color: selected ? DEFAULT_SHAPE_STYLES.selection.color : this.hexToNumber(shape.style.borderColor || '#000000'),
                     alignment: 0.5,
                     cap: 'round',
                     join: 'round',
                 });
             }
-        }
+        } else if (shape.type === 'line') {
+            const points = shape.points;
+            if (points.length >= 2) {
+                graphics.moveTo(points[0].x, points[0].y);
+                for (let i = 1; i < points.length; i++) {
+                    graphics.lineTo(points[i].x, points[i].y);
+                }
 
-        return graphics;
-    }
+                graphics.stroke({
+                    width: shape.style.borderWidth || 1,
+                    color: selected ? DEFAULT_SHAPE_STYLES.selection.color : this.hexToNumber(shape.style.borderColor || '#000000'),
+                    alignment: 0.5,
+                    cap: 'round',
+                    join: 'round',
+                });
+            }
+        } else if (shape.type === 'point') {
+            graphics.circle(
+                shape.coordinate.x,
+                shape.coordinate.y,
+                shape.radius || 5
+            );
 
-    private createLine(shape: Shape, points: Coordinate[]): Graphics {
-        const graphics = new Graphics();
-
-        if (points.length >= 2) {
-            graphics.moveTo(points[0].x, points[0].y);
-            for (let i = 1; i < points.length; i++) {
-                graphics.lineTo(points[i].x, points[i].y);
+            if (shape.style.fillColor) {
+                const baseAlpha = shape.style.opacity !== undefined ? shape.style.opacity : 1;
+                graphics.fill({
+                    color: selected ? DEFAULT_SHAPE_STYLES.selection.color : this.hexToNumber(shape.style.fillColor),
+                    alpha: baseAlpha,
+                });
             }
 
             graphics.stroke({
                 width: shape.style.borderWidth || 1,
-                color: this.hexToNumber(shape.style.borderColor || '#000000'),
+                color: selected ? DEFAULT_SHAPE_STYLES.selection.color : this.hexToNumber(shape.style.borderColor || '#000000'),
                 alignment: 0.5,
-                cap: 'round',
-                join: 'round',
             });
         }
+    }
 
+    private createPolygon(shape: PolygonShape): Graphics {
+        const graphics = new Graphics();
+        this.drawShape(graphics, shape);
+        return graphics;
+    }
+
+    private createLine(shape: Shape): Graphics {
+        const graphics = new Graphics();
+        this.drawShape(graphics, shape);
         return graphics;
     }
 
     private createPoint(shape: PointShape): Graphics {
         const graphics = new Graphics();
-
-        graphics.circle(
-            shape.coordinate.x,
-            shape.coordinate.y,
-            shape.radius || 5
-        );
-
-        if (shape.style.fillColor) {
-            graphics.fill({
-                color: this.hexToNumber(shape.style.fillColor),
-                alpha: shape.style.opacity || 1,
-            });
-        }
-
-        if (shape.style.borderColor) {
-            graphics.stroke({
-                width: shape.style.borderWidth || 1,
-                color: this.hexToNumber(shape.style.borderColor),
-                alignment: 0.5,
-            });
-        }
-
+        this.drawShape(graphics, shape);
         return graphics;
     }
 
@@ -167,16 +174,9 @@ export class ShapeManager {
         let graphics: Graphics;
 
         if (shape.type === 'polygon') {
-            graphics = this.createPolygon(shape, shape.coordinates);
-
-            // // Add label to labels container (on top)
-            // if (shape.label) {
-            //     const text = this.createLabel(shape, shape.coordinates);
-            //     this.labelsContainer.addChild(text);
-            //     this.labels.set(shape.id, text);
-            // }
+            graphics = this.createPolygon(shape);
         } else if (shape.type === 'line') {
-            graphics = this.createLine(shape, shape.points);
+            graphics = this.createLine(shape);
         } else if (shape.type === 'point') {
             graphics = this.createPoint(shape);
         } else {
@@ -286,72 +286,7 @@ export class ShapeManager {
         if (!shapeData) return;
 
         const { graphics, shape } = shapeData;
-        graphics.clear();
-
-        // Redraw the shape with selection highlight
-        if (shape.type === 'polygon') {
-            const coords = shape.coordinates;
-            if (coords.length > 0) {
-                const points: number[] = [];
-                coords.forEach(coord => {
-                    points.push(coord.x, coord.y);
-                });
-
-                graphics.poly(points);
-
-                if (shape.style.fillColor) {
-                    const baseAlpha = shape.style.opacity !== undefined ? shape.style.opacity : 1;
-                    graphics.fill({
-                        color: this.hexToNumber(shape.style.fillColor),
-                        alpha: selected ? baseAlpha * 0.7 : baseAlpha,
-                    });
-                }
-
-                graphics.stroke({
-                    width: shape.style.borderWidth || 1,
-                    color: selected ? 0x0066ff : this.hexToNumber(shape.style.borderColor || '#000000'),
-                    alignment: 0.5,
-                    cap: 'round',
-                    join: 'round',
-                });
-            }
-        } else if (shape.type === 'line') {
-            const points = shape.points;
-            if (points.length >= 2) {
-                graphics.moveTo(points[0].x, points[0].y);
-                for (let i = 1; i < points.length; i++) {
-                    graphics.lineTo(points[i].x, points[i].y);
-                }
-
-                graphics.stroke({
-                    width: shape.style.borderWidth || 1,
-                    color: selected ? 0x0066ff : this.hexToNumber(shape.style.borderColor || '#000000'),
-                    alignment: 0.5,
-                    cap: 'round',
-                    join: 'round',
-                });
-            }
-        } else if (shape.type === 'point') {
-            graphics.circle(
-                shape.coordinate.x,
-                shape.coordinate.y,
-                shape.radius || 5
-            );
-
-            if (shape.style.fillColor) {
-                const baseAlpha = shape.style.opacity !== undefined ? shape.style.opacity : 1;
-                graphics.fill({
-                    color: selected ? 0x0066ff : this.hexToNumber(shape.style.fillColor),
-                    alpha: baseAlpha,
-                });
-            }
-
-            graphics.stroke({
-                width: shape.style.borderWidth || 1,
-                color: selected ? 0x0066ff : this.hexToNumber(shape.style.borderColor || '#000000'),
-                alignment: 0.5,
-            });
-        }
+        this.drawShape(graphics, shape, selected);
     }
 
     selectShape(id: string, multiSelect: boolean = false): void {
@@ -444,7 +379,7 @@ export class ShapeManager {
                 const handle = new Graphics() as ResizeHandleGraphics;
                 handle.rect(-4, -4, 8, 8);
                 handle.fill({ color: 0xffffff });
-                handle.stroke({ width: 2, color: 0x0066ff });
+                handle.stroke({ width: 2, color: DEFAULT_SHAPE_STYLES.selection.color });
                 handle.position.set(coord.x, coord.y);
                 handle.eventMode = 'static';
                 handle.cursor = 'pointer';
@@ -468,7 +403,7 @@ export class ShapeManager {
                 const handle = new Graphics() as ResizeHandleGraphics;
                 handle.rect(-4, -4, 8, 8);
                 handle.fill({ color: 0xffffff });
-                handle.stroke({ width: 2, color: 0x0066ff });
+                handle.stroke({ width: 2, color: DEFAULT_SHAPE_STYLES.selection.color });
                 handle.position.set(
                     shape.coordinate.x + dir.x * radius,
                     shape.coordinate.y + dir.y * radius
@@ -629,11 +564,7 @@ export class ShapeManager {
                 { x: x + halfSize, y: y + halfSize },
                 { x: x - halfSize, y: y + halfSize },
             ],
-            style: {
-                fillColor: '#90EE90',
-                borderColor: '#228B22',
-                borderWidth: 2,
-            },
+            style: DEFAULT_SHAPE_STYLES.polygon,
         };
 
         const graphics = this.addShape(newShape);
@@ -652,10 +583,7 @@ export class ShapeManager {
                 { x, y },
                 { x: x + length, y },
             ],
-            style: {
-                borderColor: '#0066ff',
-                borderWidth: 2,
-            },
+            style: DEFAULT_SHAPE_STYLES.line,
         };
 
         const graphics = this.addShape(newShape);
@@ -664,7 +592,7 @@ export class ShapeManager {
         return newShape;
     }
 
-    createNewPoint(x: number, y: number, radius: number = 8): Shape {
+    createNewPoint(x: number, y: number, radius: number = DEFAULT_SHAPE_STYLES.point.radius): Shape {
         const id = `point-${Date.now()}`;
 
         const newShape: Shape = {
@@ -673,9 +601,9 @@ export class ShapeManager {
             coordinate: { x, y },
             radius,
             style: {
-                fillColor: '#FF6347',
-                borderColor: '#8B0000',
-                borderWidth: 2,
+                fillColor: DEFAULT_SHAPE_STYLES.point.fillColor,
+                borderColor: DEFAULT_SHAPE_STYLES.point.borderColor,
+                borderWidth: DEFAULT_SHAPE_STYLES.point.borderWidth,
             },
         };
 
